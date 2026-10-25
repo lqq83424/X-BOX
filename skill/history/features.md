@@ -6006,3 +6006,21 @@ echo-exo-selector: mime=video/avc preferSoft=false count=3 first=c2.qti.avc.deco
 **审查结论（10-22，收敛：0 阻断 / 0 高 / 0 中）**：F1 已接受 —— 回退刷新时 `PictureEffects.onPlayerReleased` 已把 `current` 置空，面板画质 tab 的 `unavailableReason` 会从真实原因退成 `None`（只少一条提示，重开面板恢复；彻底修需新增「只刷解码项」接口，跨 4 文件）；F3 既有 —— `videoDecodeKind` 无时序，复用内核起播时可携带上一部片的值，只导致少一次回退；F4 口味差异 —— 起播超时 / `ERROR_KIND_UNKNOWN` 在软解档同样会触发切档（`classifyError` 只把 IO/PARSING 归 NETWORK），与既有硬→软对称。
 
 **验证**：`assembleDebug` + `testDebugUnitTest` → `BUILD SUCCESSFUL`（36s），**1350 例 / 0 失败**（`PlayerHelperTest` 12/12）；已装 MuMu（`127.0.0.1:16384`）。**未真机**。**走查判据**：软解档播放失败时日志出现 `soft->hard decode` + toast「软解失败，已切换硬解重试」，面板开着时「解码方式」应立即变成「硬解码」，面板档位不落库、换线后恢复软解档；HDR 源或设备无硬解时应只见 `skip hard decode`（带 `kind=` / `candidate=`）而不重播。**未提交**。
+
+## 音乐播放器逐字歌词（2026-10-25）
+
+**背景**：`MusicLrc` 只保留行级时间戳，增强 LRC 的 `<mm:ss.xx>` 词标签在解析时被整段删掉，`MusicLyrics` 也只做整行高亮；QQ 音乐 QRC、网易云 YRC 这类逐字文件的词时间同样无处落地，KTV 式扫光无从实现。
+
+**落地（3 文件）**：
+
+- `MusicLrc.kt` 模型：`LyricWord(timeMs, text)`；`LyricLine` 增 `words: List<LyricWord>` 与 `durationMs`，两者都有默认值，`LyricLine(timeMs, text)` 的既有构造点（`MusicPlayerState`、单测）零改动。
+- `MusicLrc.kt` 解析：`LrcFormat` 增 `QRC` / `YRC`，靠 `[start,dur]` 行头 + `(word,dur)`、`(word,dur,0)` 词标签识别；`parseTimed(raw, wordTag, tagLeads)` 用一个开关同时覆盖"标签在前"（YRC）与"标签在后"（QRC）两种词序；词时间按绝对毫秒读，首个词时间小于行首时整行按相对偏移处理（`lineStart + offset`）；增强 LRC 走 `lrcWords`，一行多个 `[mm:ss]` 时仍按行级处理（词标签是绝对时间，复用到第二个时间戳会错位）；ASS 的 `{\k}` 由 `assWords` 折算词时间（1/100 秒 × 10），无 `\k` 的 Dialogue 走原 `assPlain` 路径。
+- `MusicLrc.kt` 纯函数：`lyricCharTimes(line, nextStartMs)` 把词时间摊到每个字符（词内按字宽均分，无词时间时按行区间均分，上限 `LYRIC_LINE_MAX_SPAN_MS` = 6s，避免长间奏把一行拉成爬行）；`lyricRevealCount(times, positionMs)` 二分出已唱字数。
+- `MusicPlayerScreen.kt`：`MusicLyrics` 增 `playing` 参数；`rememberLyricProgress` 用 `withFrameNanos` 在两次 400ms 进度回调之间插值（暂停即定格）；新增 `MusicLyricLine`，`derivedStateOf` 只在"已唱字数"变化时重组活动行，已唱 `primary`、未唱 `onSurface` 40%，非活动行不读取插值状态、不逐帧重组；`NANOS_PER_MS` 与既有 `WAVE_*` 常量同处。
+- `MusicLrcTest.kt`：+7 例（增强 LRC 词标签、无前导词标签、QRC、YRC 相对偏移、ASS `\k`、词时间摊字、无词时间均分），原 6 例未改。
+
+**行为**：逐字文件（QRC / YRC / 增强 LRC / 带 `\k` 的 ASS）按字变色；只有行级时间戳的普通 LRC 也按行区间均分扫光（估算，长间奏受 6s 上限约束）；SRT 与无 `\k` 的 ASS 走原路径，`words` 为空，退化成整行均分。日志 `echo-music lyric raw` 增 `wordLines=` 便于判"这份歌词到底有没有词级时间"。
+
+**验证**：`assembleDebug` / `testDebugUnitTest` **未跑** —— 本次环境内存不足，Gradle daemon 启动后被 OOM 杀掉（`Gradle build daemon disappeared unexpectedly`）。替代验证：kotlinc 2.1.0 编译 `MusicLrc.kt`（android/net、android/text、android/util、LOG、Http、UniversalDetector 以桩替代）通过，并跑真实 `MusicLrcTest` → **13 例全过**；`MusicPlayerScreen.kt` 用同一编译器做前端解析，无语法错误（只剩 Compose / Android 未解析引用）。**UI 未真机走查**。
+
+**未做**：视频播放器侧 `SimpleSubtitleView` 的 `lyricMode` 仍是行级 `ForegroundColorSpan`，MV 歌词逐字要另改 `Subtitle` 模型；KRC（酷狗，加密 + 逐字）与 TTML / Apple 音节歌词未支持；逐字行点击 seek 仍落在行首时间。
