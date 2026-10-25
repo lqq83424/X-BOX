@@ -1,5 +1,6 @@
 package com.github.tvbox.osc.ui.music
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -67,5 +68,71 @@ class MusicLrcTest {
         assertEquals("第一句", lines[0].text)
         assertEquals(15000L, lines[1].timeMs)
         assertEquals("第二句\n副歌,带逗号", lines[1].text)
+    }
+
+    @Test
+    fun parseEnhancedLrcKeepsWordTiming() {
+        val lines = MusicLrc.parse("[00:12.34]<00:12.34>Hel<00:12.94>lo <00:13.50>world")
+        assertEquals(1, lines.size)
+        assertEquals("Hello world", lines[0].text)
+        assertEquals(listOf(12340L, 12940L, 13500L), lines[0].words.map { it.timeMs })
+        assertEquals("Hel", lines[0].words[0].text)
+        assertEquals("lo ", lines[0].words[1].text)
+    }
+
+    @Test
+    fun parseEnhancedLrcWithoutLeadingWordTag() {
+        val lines = MusicLrc.parse("[00:05.00]先 <00:05.60>后")
+        assertEquals("先 后", lines[0].text)
+        assertEquals(listOf(5000L, 5600L), lines[0].words.map { it.timeMs })
+    }
+
+    @Test
+    fun charTimesFollowWordTiming() {
+        val line = LyricLine(1000L, "ab", listOf(LyricWord(1000L, "a"), LyricWord(2000L, "b")))
+        val times = lyricCharTimes(line, 3000L)
+        assertArrayEquals(longArrayOf(1000L, 2000L), times)
+        assertEquals(0, lyricRevealCount(times, 999L))
+        assertEquals(1, lyricRevealCount(times, 1000L))
+        assertEquals(2, lyricRevealCount(times, 2500L))
+    }
+
+    @Test
+    fun charTimesSpreadEvenlyWithoutWordTiming() {
+        val line = LyricLine(0L, "abcd")
+        assertArrayEquals(longArrayOf(0L, 1000L, 2000L, 3000L), lyricCharTimes(line, 4000L))
+    }
+
+    @Test
+    fun parseQrcWordTags() {
+        val lines = MusicLrc.parse("[1000,4000]你(1000,500)好(1500,500)世(2000,400)界(2400,600)")
+        assertEquals(1, lines.size)
+        assertEquals(4000L, lines[0].durationMs)
+        assertEquals("你好世界", lines[0].text)
+        assertEquals(listOf(1000L, 1500L, 2000L, 2400L), lines[0].words.map { it.timeMs })
+    }
+
+    @Test
+    fun parseYrcRelativeWordOffsets() {
+        val lines = MusicLrc.parse("[10530,3520](0,320,0)一(320,280,0)个(600,400,0)人")
+        assertEquals(1, lines.size)
+        assertEquals("一个人", lines[0].text)
+        assertEquals(listOf(10530L, 10850L, 11130L), lines[0].words.map { it.timeMs })
+    }
+
+    @Test
+    fun parseAssKaraokeSyllables() {
+        val ass = """
+            [Script Info]
+            ScriptType: v4.00+
+            [Events]
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: 0,0:00:12.34,0:00:15.00,Default,,0,0,0,,{\k50}一{\k50}二{\k100}三
+        """.trimIndent()
+        val lines = MusicLrc.parse(ass)
+        assertEquals(1, lines.size)
+        assertEquals(2660L, lines[0].durationMs)
+        assertEquals("一二三", lines[0].text)
+        assertEquals(listOf(12340L, 12840L, 13340L), lines[0].words.map { it.timeMs })
     }
 }
