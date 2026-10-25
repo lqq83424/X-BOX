@@ -52,8 +52,11 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.LongState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -75,9 +78,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -165,6 +172,7 @@ fun MusicPlayerScreen(
                     MusicLyrics(
                         lines = state.lyrics,
                         positionMs = state.positionMs,
+                        playing = state.playing,
                         onSeekLine = onSeek,
                         modifier = Modifier
                             .weight(1f)
@@ -530,11 +538,13 @@ private fun MusicInfo(title: String, subtitle: String) {
 private fun MusicLyrics(
     lines: List<LyricLine>,
     positionMs: Long,
+    playing: Boolean,
     onSeekLine: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
     val current = remember(lines, positionMs) { lyricIndex(lines, positionMs) }
+    val progress = rememberLyricProgress(positionMs, playing)
     LaunchedEffect(current) {
         if (current >= 0) listState.animateScrollToItem((current - 1).coerceAtLeast(0))
     }
@@ -545,22 +555,75 @@ private fun MusicLyrics(
         verticalArrangement = Arrangement.Center,
     ) {
         itemsIndexed(lines) { index, line ->
-            val active = index == current
-            Text(
-                text = line.text,
-                style = if (active) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
-                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onSeekLine(line.timeMs) }
-                    .padding(vertical = 6.dp),
+            MusicLyricLine(
+                line = line,
+                active = index == current,
+                nextStartMs = lines.getOrNull(index + 1)?.timeMs ?: 0L,
+                progress = progress,
+                onSeek = onSeekLine,
             )
         }
     }
+}
+
+@Composable
+private fun rememberLyricProgress(positionMs: Long, playing: Boolean): LongState {
+    val progress = remember { mutableLongStateOf(positionMs) }
+    LaunchedEffect(positionMs, playing) {
+        progress.longValue = positionMs
+        if (!playing) return@LaunchedEffect
+        var anchor = 0L
+        withFrameNanos { anchor = it }
+        while (true) {
+            withFrameNanos { now ->
+                progress.longValue = positionMs + (now - anchor) / NANOS_PER_MS
+            }
+        }
+    }
+    return progress
+}
+
+@Composable
+private fun MusicLyricLine(
+    line: LyricLine,
+    active: Boolean,
+    nextStartMs: Long,
+    progress: LongState,
+    onSeek: (Long) -> Unit,
+) {
+    val charTimes = remember(line, nextStartMs) { lyricCharTimes(line, nextStartMs) }
+    val revealed by remember(charTimes, active) {
+        derivedStateOf { if (active) lyricRevealCount(charTimes, progress.longValue) else 0 }
+    }
+    val sungColor = MaterialTheme.colorScheme.primary
+    val idleColor = if (active) {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val text = remember(line.text, active, revealed, sungColor) {
+        if (!active || revealed <= 0) {
+            AnnotatedString(line.text)
+        } else {
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = sungColor)) { append(line.text.take(revealed)) }
+                append(line.text.drop(revealed))
+            }
+        }
+    }
+    Text(
+        text = text,
+        style = if (active) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+        color = idleColor,
+        fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+        textAlign = TextAlign.Center,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onSeek(line.timeMs) }
+            .padding(vertical = 6.dp),
+    )
 }
 
 @Composable
@@ -805,6 +868,8 @@ private val TWO_PI = (2f * PI).toFloat()
 private const val WAVE_PERIOD_NANOS = 2_000_000_000L
 
 private const val WAVE_FRAME_INTERVAL_NANOS = 1_000_000_000L / 30
+
+private const val NANOS_PER_MS = 1_000_000L
 
 @Composable
 private fun MusicTipOverlay() {
